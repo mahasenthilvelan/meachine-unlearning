@@ -62,3 +62,42 @@ if 'acc_before' in st.session_state:
 
         st.write(f"Before Unlearning F1: {st.session_state['f1_before']:.4f}")
         st.write(f"After Unlearning F1: {f1_after:.4f}")
+
+# =========================================================
+# STEP 6: Visualization - Before vs After Forgetting
+# =========================================================
+
+st.subheader("📊 Model Performance Comparison")
+
+metrics = ['Accuracy', 'F1 Score']
+before_values = [
+    st.session_state['acc_before'],
+    st.session_state['f1_before']
+]
+after_values = [
+    acc_after,
+    f1_after
+]
+
+fig, ax = plt.subplots()
+
+bar_width = 0.35
+x = range(len(metrics))
+
+ax.bar(x, before_values, width=bar_width, label='Before Forgetting')
+ax.bar(
+    [i + bar_width for i in x],
+    after_values,
+    width=bar_width,
+    label='After Forgetting'
+)
+
+ax.set_xlabel("Metrics")
+ax.set_ylabel("Score")
+ax.set_title("Before vs After User-Level Machine Unlearning")
+ax.set_xticks([i + bar_width / 2 for i in x])
+ax.set_xticklabels(metrics)
+ax.legend()
+
+st.pyplot(fig)
+
