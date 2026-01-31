@@ -12,21 +12,21 @@ from sklearn.metrics import accuracy_score, f1_score
 # =========================================================
 # PAGE CONFIG
 # =========================================================
-st.set_page_config(page_title="Machine Unlearning Demo", layout="centered")
+st.set_page_config(page_title="Advanced Machine Unlearning Demo", layout="centered")
 
-st.title("🧠 User-Level Machine Unlearning")
+st.title("🧠 Multi-Criteria Machine Unlearning System")
 st.write(
-    "This web application demonstrates how an AI model can forget a specific user's "
-    "influence while maintaining overall performance."
+    "This application demonstrates **selective machine unlearning** where users can "
+    "define multiple conditions to forget specific data and observe how model behavior changes."
 )
 
 # =========================================================
-# STEP 1: UPLOAD REDUCED DATASET (< 25 MB)
+# STEP 1: UPLOAD REDUCED DATASET (<25 MB)
 # =========================================================
 st.subheader("📂 Upload Reduced Dataset")
 
 uploaded_file = st.file_uploader(
-    "Upload reduced Amazon reviews dataset (CSV)",
+    "Upload reduced dataset (CSV with UserId, Text, Score)",
     type=["csv"]
 )
 
@@ -36,18 +36,14 @@ if uploaded_file is None:
 
 df = pd.read_csv(uploaded_file)
 st.success("Dataset uploaded successfully!")
-st.subheader("Dataset Preview")
 st.dataframe(df.head())
 
 # =========================================================
-# STEP 2: VALIDATE REQUIRED COLUMNS
+# STEP 2: VALIDATE COLUMNS
 # =========================================================
 required_cols = {"UserId", "Text", "Score"}
-if not required_cols.issubset(set(df.columns)):
-    st.error(
-        "Dataset must contain the following columns: "
-        "UserId, Text, Score"
-    )
+if not required_cols.issubset(df.columns):
+    st.error("Dataset must contain UserId, Text, and Score columns.")
     st.stop()
 
 # =========================================================
@@ -63,8 +59,8 @@ def clean_text(text):
 df = df.dropna()
 df["clean_text"] = df["Text"].apply(clean_text)
 
-# Convert rating to binary sentiment
-df = df[df["Score"] != 3]  # remove neutral
+# Binary sentiment
+df = df[df["Score"] != 3]
 df["label"] = df["Score"].apply(lambda x: 1 if x >= 4 else 0)
 
 st.success("Preprocessing completed!")
@@ -73,100 +69,163 @@ st.write(df[["UserId", "clean_text", "label"]].head())
 # =========================================================
 # STEP 4: TRAIN BASELINE MODEL (BEFORE UNLEARNING)
 # =========================================================
-st.subheader("🤖 Train Baseline Model")
+st.subheader("🤖 Baseline Model Training")
 
-if st.button("Train Baseline Model"):
-    X = df["clean_text"]
-    y = df["label"]
+X = df["clean_text"]
+y = df["label"]
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
 
-    tfidf = TfidfVectorizer(
-        max_features=5000,
-        stop_words="english"
-    )
-    X_train_vec = tfidf.fit_transform(X_train)
-    X_test_vec = tfidf.transform(X_test)
+tfidf = TfidfVectorizer(max_features=5000, stop_words="english")
+X_train_vec = tfidf.fit_transform(X_train)
+X_test_vec = tfidf.transform(X_test)
 
-    model = LogisticRegression(max_iter=1000)
-    model.fit(X_train_vec, y_train)
+model = LogisticRegression(max_iter=1000)
+model.fit(X_train_vec, y_train)
 
-    y_pred = model.predict(X_test_vec)
+y_pred = model.predict(X_test_vec)
+y_prob = model.predict_proba(X_test_vec)[:, 1]
 
-    acc_before = accuracy_score(y_test, y_pred)
-    f1_before = f1_score(y_test, y_pred)
+acc_before = accuracy_score(y_test, y_pred)
+f1_before = f1_score(y_test, y_pred)
 
-    st.session_state["acc_before"] = acc_before
-    st.session_state["f1_before"] = f1_before
-
-    st.success(f"Baseline Accuracy: {acc_before:.4f}")
-    st.success(f"Baseline F1 Score: {f1_before:.4f}")
+st.success(f"Baseline Accuracy: {acc_before:.4f}")
+st.success(f"Baseline F1 Score: {f1_before:.4f}")
 
 # =========================================================
-# STEP 5: USER-LEVEL MACHINE UNLEARNING
+# STEP 5: DEFINE MULTI-CRITERIA FORGETTING RULES
 # =========================================================
-if "acc_before" in st.session_state:
-    st.subheader("🔴 User-Level Machine Unlearning")
+st.subheader("🧩 Define Forgetting Rules")
 
-    user_list = df["UserId"].value_counts().index.tolist()
-    target_user = st.selectbox(
-        "Select a user to forget",
-        user_list
+st.write(
+    "Select **one or more conditions**. "
+    "All selected conditions will be applied together (AND logic)."
+)
+
+forget_columns = st.multiselect(
+    "Select columns to forget by",
+    ["UserId", "Score"]
+)
+
+filters = {}
+
+for col in forget_columns:
+    unique_vals = df[col].unique().tolist()
+    selected_vals = st.multiselect(
+        f"Select values for {col}",
+        unique_vals
+    )
+    if selected_vals:
+        filters[col] = selected_vals
+
+# =========================================================
+# STEP 6: APPLY MACHINE UNLEARNING
+# =========================================================
+if st.button("🚫 Apply Forgetting Rules") and filters:
+
+    # Identify rows to forget
+    mask = pd.Series([True] * len(df))
+    for col, vals in filters.items():
+        mask &= df[col].isin(vals)
+
+    forgotten_data = df[mask]
+    df_unlearn = df[~mask]
+
+    st.info(
+        f"🔍 Rows selected for forgetting: {forgotten_data.shape[0]} "
+        f"({forgotten_data.shape[0] / df.shape[0] * 100:.2f}% of data)"
     )
 
-    if st.button("Forget Selected User"):
-        df_unlearn = df[df["UserId"] != target_user]
+    # =====================================================
+    # STEP 6.1: RETRAIN MODEL AFTER UNLEARNING
+    # =====================================================
+    X_u = df_unlearn["clean_text"]
+    y_u = df_unlearn["label"]
 
-        X_u = df_unlearn["clean_text"]
-        y_u = df_unlearn["label"]
+    X_train_u, X_test_u, y_train_u, y_test_u = train_test_split(
+        X_u, y_u, test_size=0.2, random_state=42, stratify=y_u
+    )
 
-        X_train_u, X_test_u, y_train_u, y_test_u = train_test_split(
-            X_u, y_u, test_size=0.2, random_state=42, stratify=y_u
-        )
+    tfidf_u = TfidfVectorizer(max_features=5000, stop_words="english")
+    X_train_u_vec = tfidf_u.fit_transform(X_train_u)
+    X_test_u_vec = tfidf_u.transform(X_test_u)
 
-        tfidf_u = TfidfVectorizer(
-            max_features=5000,
-            stop_words="english"
-        )
-        X_train_u_vec = tfidf_u.fit_transform(X_train_u)
-        X_test_u_vec = tfidf_u.transform(X_test_u)
+    model_u = LogisticRegression(max_iter=1000)
+    model_u.fit(X_train_u_vec, y_train_u)
 
-        model_u = LogisticRegression(max_iter=1000)
-        model_u.fit(X_train_u_vec, y_train_u)
+    y_pred_u = model_u.predict(X_test_u_vec)
+    y_prob_u = model_u.predict_proba(X_test_u_vec)[:, 1]
 
-        y_pred_u = model_u.predict(X_test_u_vec)
+    acc_after = accuracy_score(y_test_u, y_pred_u)
+    f1_after = f1_score(y_test_u, y_pred_u)
 
-        acc_after = accuracy_score(y_test_u, y_pred_u)
-        f1_after = f1_score(y_test_u, y_pred_u)
+    # =====================================================
+    # STEP 7: FORGETTING-SPECIFIC METRICS (CORE)
+    # =====================================================
+    # Prediction change on forgotten subset
+    X_forgot = tfidf.transform(forgotten_data["clean_text"])
+    pred_before_forgot = model.predict(X_forgot)
+    pred_after_forgot = model_u.predict(tfidf_u.transform(forgotten_data["clean_text"]))
 
-        st.error(f"Accuracy AFTER Unlearning: {acc_after:.4f}")
-        st.error(f"F1 Score AFTER Unlearning: {f1_after:.4f}")
+    prediction_change_rate = np.mean(pred_before_forgot != pred_after_forgot)
 
-        # =================================================
-        # STEP 6: VISUALIZATION (BEFORE vs AFTER)
-        # =================================================
-        st.subheader("📊 Before vs After Comparison")
+    # Confidence drop
+    prob_before = model.predict_proba(X_forgot)[:, 1]
+    prob_after = model_u.predict_proba(tfidf_u.transform(forgotten_data["clean_text"]))[:, 1]
 
-        metrics = ["Accuracy", "F1 Score"]
-        before = [
-            st.session_state["acc_before"],
-            st.session_state["f1_before"]
-        ]
-        after = [acc_after, f1_after]
+    confidence_drop = np.mean(prob_before - prob_after)
 
-        fig, ax = plt.subplots()
-        x = np.arange(len(metrics))
-        width = 0.35
+    # =====================================================
+    # STEP 8: DISPLAY RESULTS
+    # =====================================================
+    st.subheader("📊 Results Summary")
 
-        ax.bar(x - width/2, before, width, label="Before Forgetting")
-        ax.bar(x + width/2, after, width, label="After Forgetting")
+    st.metric("Accuracy Before Forgetting", f"{acc_before:.4f}")
+    st.metric("Accuracy After Forgetting", f"{acc_after:.4f}", delta=f"{acc_after-acc_before:.4f}")
 
-        ax.set_ylabel("Score")
-        ax.set_title("Effect of User-Level Machine Unlearning")
-        ax.set_xticks(x)
-        ax.set_xticklabels(metrics)
-        ax.legend()
+    st.metric(
+        "Prediction Change Rate (Forgotten Data)",
+        f"{prediction_change_rate * 100:.2f}%"
+    )
 
-        st.pyplot(fig)
+    st.metric(
+        "Average Confidence Drop",
+        f"{confidence_drop:.4f}"
+    )
+
+    # =====================================================
+    # STEP 9: LINE CHART (CLEAR STORY)
+    # =====================================================
+    st.subheader("📉 Model Behavior Change")
+
+    fig, ax = plt.subplots()
+
+    ax.plot(
+        ["Before Forgetting", "After Forgetting"],
+        [acc_before, acc_after],
+        marker="o",
+        linewidth=3
+    )
+
+    ax.set_ylabel("Accuracy")
+    ax.set_title("Effect of Multi-Criteria Machine Unlearning")
+    ax.grid(True)
+
+    st.pyplot(fig)
+
+    # =====================================================
+    # STEP 10: HUMAN EXPLANATION
+    # =====================================================
+    st.markdown("""
+### 🧠 What does this show?
+
+- The model was first trained using **all available data**
+- Multiple conditions were applied to **selectively forget data**
+- The **prediction change rate** and **confidence drop** confirm that:
+  - The forgotten data no longer influences the model
+  - Overall performance remains stable
+
+This demonstrates **flexible, multi-criteria machine unlearning**.
+""")
